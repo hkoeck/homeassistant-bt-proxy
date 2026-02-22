@@ -1,0 +1,17 @@
+[Unit]
+Description=Bluetooth HCI-over-Serial Proxy
+After=bluetooth.target
+Conflicts=bluetooth.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/systemctl stop bluetooth.service
+ExecStart=/usr/bin/python3 /usr/local/bin/hci-proxy.py
+Restart=on-failure
+RestartSec=5
+
+# Needs raw Bluetooth socket access and connection to QEMU's virtio-serial socket
+# Run as root for simplicity (HCI_CHANNEL_USER requires CAP_NET_ADMIN + CAP_NET_RAW)
+
+[Install]
+WantedBy=multi-user.target
