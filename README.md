@@ -117,7 +117,7 @@ The proxy parses HCI packet headers to determine packet boundaries (each type ha
 | `hci-proxy.py` | Host-side proxy script (deploy to `/usr/local/bin/`) |
 | `hci-proxy.service` | systemd unit for the proxy (deploy to `/etc/systemd/system/`) |
 | `vm-channel.xml` | libvirt XML snippet to add the serial port to the VM |
-| `ha-addon/` | Home Assistant Add-on for btattach persistence |
+| `bt-hci-proxy/` | Home Assistant Add-on for btattach persistence |
 
 ## Installation
 
@@ -147,7 +147,7 @@ The HA Add-on runs `btattach` inside the VM to create an HCI device from the ser
 
 **Option A: Local add-on**
 
-Copy the `ha-addon/` directory to `/addons/bt-hci-proxy/` on HAOS (via Samba share or SSH), then:
+Copy the `bt-hci-proxy/` directory to `/addons/bt-hci-proxy/` on HAOS (via Samba share or SSH), then:
 
 1. Go to **Settings > Add-ons > Add-on Store**
 2. Click the three-dot menu (top right) > **Check for updates**
@@ -160,7 +160,7 @@ If this repo is hosted on GitHub, add it as a custom add-on repository:
 
 1. Go to **Settings > Add-ons > Add-on Store**
 2. Click the three-dot menu > **Repositories**
-3. Add the repository URL (e.g. `https://github.com/fifthvertex/bt-proxy`)
+3. Add the repository URL (e.g. `https://github.com/nlothian/homeassistant-bt-proxy`)
 4. Find **BT HCI Proxy** and install it
 
 The add-on defaults to `/dev/ttyS1` with protocol `h4` and passive scanning enabled. These can be changed in the add-on's **Configuration** tab if needed.
@@ -192,7 +192,7 @@ Home Assistant's Bluetooth integration should transition from `setup_retry` to `
 
 - **Passive scanning**: The latency added by the proxy path may prevent active BLE scanning from working reliably. The add-on enables passive scanning on the adapter by default (via `btmgmt`). You can disable this by setting `passive_scan: false` in the add-on configuration. You may also need to enable the passive scanning option in the relevant Home Assistant integration. Passive scanning is sufficient for most BLE devices.
 
-- **HAOS read-only filesystem**: HAOS uses a read-only root filesystem (erofs), so `btattach` can't be persisted as a systemd unit inside the VM. The HA Add-on (`ha-addon/`) solves this by running `btattach` in a managed Docker container that persists across reboots.
+- **HAOS read-only filesystem**: HAOS uses a read-only root filesystem (erofs), so `btattach` can't be persisted as a systemd unit inside the VM. The HA Add-on (`bt-hci-proxy/`) solves this by running `btattach` in a managed Docker container that persists across reboots.
 
 - **Host BlueZ is stopped**: The proxy requires exclusive adapter access, so `bluetooth.service` on the host is automatically stopped. The host cannot use Bluetooth while the proxy is running.
 

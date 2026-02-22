@@ -2,7 +2,7 @@ name: "BT HCI Proxy"
 version: "1.0.0"
 slug: "bt-hci-proxy"
 description: "Attaches a Bluetooth HCI UART device (btattach) for use with the bt-proxy host-side service"
-url: "https://github.com/fifthvertex/bt-proxy"
+url: "https://github.com/nlothian/homeassistant-bt-proxy"
 arch:
   - amd64
   - aarch64
