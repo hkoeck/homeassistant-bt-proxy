@@ -2,6 +2,10 @@
 
 A proxy that forwards Bluetooth HCI packets from a Linux host's Bluetooth adapter to a Home Assistant OS (HAOS) VM, enabling full Bluetooth support without USB passthrough.
 
+[![Open your Home Assistant instance and add this service.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fnlothian%2Fhomeassistant-bt-proxy%2F)
+
+Note: You **MUST ADD THE PROXY TO THE HOST MANUALLY**. [See below](#2-install-the-proxy-on-the-host).
+
 ## The Problem
 
 Intel CNVi Bluetooth adapters (combo WiFi+BT cards integrated into the chipset) are **fundamentally incompatible with QEMU USB passthrough**:

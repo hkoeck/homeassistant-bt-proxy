@@ -5,8 +5,6 @@ PROTOCOL=$(bashio::config 'protocol')
 PASSIVE_SCAN=$(bashio::config 'passive_scan')
 ADAPTER_NAME_PREFIX=$(bashio::config 'adapter_name_prefix')
 
-DBUS_ADAPTER="org.bluez /org/bluez/hci0"
-
 # hci_uart is typically already loaded on HAOS. Try modprobe as a fallback,
 # but don't fail if it errors (e.g. /lib/modules not available in container).
 if ! grep -q hci_uart /proc/modules 2>/dev/null; then
@@ -24,40 +22,59 @@ wait_for_hci0() {
     return 1
 }
 
-get_dbus_property() {
-    local property="$1"
-    dbus-send --system --print-reply --dest=org.bluez \
-        /org/bluez/hci0 \
-        org.freedesktop.DBus.Properties.Get \
-        string:"org.bluez.Adapter1" string:"${property}" 2>/dev/null
+# Wait for BlueZ to register hci0 on D-Bus (adapter must be powered and visible)
+wait_for_bluez_adapter() {
+    for i in $(seq 1 15); do
+        if dbus-send --system --print-reply --dest=org.bluez \
+            /org/bluez/hci0 \
+            org.freedesktop.DBus.Properties.Get \
+            string:"org.bluez.Adapter1" string:"Address" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 set_adapter_name() {
     if [ -n "${ADAPTER_NAME_PREFIX}" ]; then
         # Read the manufacturer ID from BlueZ D-Bus properties
         local manufacturer_id
-        manufacturer_id=$(get_dbus_property "Manufacturer" | grep "uint16" | awk '{print $NF}')
+        manufacturer_id=$(dbus-send --system --print-reply --dest=org.bluez \
+            /org/bluez/hci0 \
+            org.freedesktop.DBus.Properties.Get \
+            string:"org.bluez.Adapter1" string:"Manufacturer" 2>/dev/null \
+            | grep "uint16" | awk '{print $NF}' || echo "")
 
-        local manufacturer_name=""
-        case "${manufacturer_id}" in
-            2)   manufacturer_name="Intel Corp." ;;
-            10)  manufacturer_name="Qualcomm" ;;
-            13)  manufacturer_name="Texas Instruments" ;;
-            15)  manufacturer_name="Broadcom" ;;
-            29)  manufacturer_name="CSR" ;;
-            57)  manufacturer_name="MediaTek" ;;
-            93)  manufacturer_name="Realtek" ;;
-            *)   manufacturer_name="ID ${manufacturer_id}" ;;
-        esac
+        local new_name
+        if [ -n "${manufacturer_id}" ]; then
+            local manufacturer_name=""
+            case "${manufacturer_id}" in
+                2)   manufacturer_name="Intel Corp." ;;
+                10)  manufacturer_name="Qualcomm" ;;
+                13)  manufacturer_name="Texas Instruments" ;;
+                15)  manufacturer_name="Broadcom" ;;
+                29)  manufacturer_name="CSR" ;;
+                57)  manufacturer_name="MediaTek" ;;
+                93)  manufacturer_name="Realtek" ;;
+                *)   manufacturer_name="ID ${manufacturer_id}" ;;
+            esac
+            new_name="${ADAPTER_NAME_PREFIX} ${manufacturer_name}"
+        else
+            bashio::log.warning "Could not read manufacturer ID from D-Bus"
+            new_name="${ADAPTER_NAME_PREFIX}"
+        fi
 
-        local new_name="${ADAPTER_NAME_PREFIX} ${manufacturer_name}"
         bashio::log.info "Setting adapter alias to: ${new_name}"
-        dbus-send --system --print-reply --dest=org.bluez \
+        if dbus-send --system --print-reply --dest=org.bluez \
             /org/bluez/hci0 \
             org.freedesktop.DBus.Properties.Set \
             string:"org.bluez.Adapter1" string:"Alias" \
-            variant:string:"${new_name}" 2>/dev/null || \
+            variant:string:"${new_name}" >/dev/null 2>&1; then
+            bashio::log.info "Adapter alias set successfully"
+        else
             bashio::log.warning "Failed to set adapter alias via D-Bus"
+        fi
     fi
 }
 
@@ -74,8 +91,15 @@ enable_passive_scan() {
 
 configure_adapter() {
     if wait_for_hci0; then
-        set_adapter_name
-        enable_passive_scan
+        bashio::log.info "hci0 is up, waiting for BlueZ to register adapter..."
+        if wait_for_bluez_adapter; then
+            bashio::log.info "BlueZ adapter registered, configuring..."
+            set_adapter_name
+            enable_passive_scan
+        else
+            bashio::log.warning "BlueZ did not register hci0 — skipping D-Bus config"
+            enable_passive_scan
+        fi
     else
         bashio::log.warning "hci0 did not appear in time — skipping adapter config"
     fi
