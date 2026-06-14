@@ -8,6 +8,10 @@ Note: You **MUST ADD THE PROXY TO THE HOST MANUALLY**. [See below](#2-install-th
 
 ## The Problem
 
+Passing a Bluetooth adapter through to a QEMU/KVM virtual machine via USB passthrough is fragile. There are (at least) two distinct failure modes:
+
+### Intel CNVi combo adapters
+
 Intel CNVi Bluetooth adapters (combo WiFi+BT cards integrated into the chipset) are **fundamentally incompatible with QEMU USB passthrough**:
 
 - The adapter depends on the host's `btusb` driver for firmware loading and USB enumeration
@@ -15,9 +19,15 @@ Intel CNVi Bluetooth adapters (combo WiFi+BT cards integrated into the chipset) 
 - QEMU's USB reset during passthrough puts the device into bootloader mode, and firmware reload fails from the VM side
 - Blacklisting `btusb` makes the device vanish permanently until reboot
 
-This means a HAOS VM on a host with only an Intel CNVi adapter has no way to access Bluetooth through standard USB passthrough.
+This means a HAOS VM on a host with only an Intel CNVi adapter has no way to access Bluetooth through standard USB passthrough. See Appendix A for complete details.
 
-See Appendix A for complete details
+### USB Bluetooth dongles (stale redirect handle on reset)
+
+USB Bluetooth dongles (e.g. Realtek RTL8761B) *can* be passed through, but are unreliable across resets. On a device-side USB reset or re-enumeration — autosuspend wakeups, firmware quirks, enumeration storms — libvirt/QEMU holds a **stale `usb-host` redirect handle**: the dongle re-enumerates in the guest at the USB level, but `hci0` never comes back (`adapter … not found`, `no BT controllers present`), so all BLE dies until a full `virsh shutdown` + `start` of the VM. udev/watchdog reattach helpers can recover the *USB* layer but not the *HCI* layer, so they don't actually fix it.
+
+### The common fix
+
+In both cases the answer is the same: **stop passing the USB device through.** Let the host own the adapter via `btusb` — which handles firmware loading and reset recovery natively — and proxy raw HCI packets to the VM instead.
 
 ## The Solution
 
