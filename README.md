@@ -114,6 +114,24 @@ The proxy parses HCI packet headers to determine packet boundaries (each type ha
 
 - **ctypes for socket bind**: Python's `socket.bind()` doesn't support the `sockaddr_hci` format, so we call libc's `bind()` directly via ctypes.
 
+### Adapter selection and reset recovery
+
+By default the proxy **auto-detects** the adapter (`--device auto`) instead of assuming `hci0`. This matters because a USB reset — common with some USB Bluetooth dongles (e.g. Realtek RTL8761B) under autosuspend or firmware quirks — re-enumerates the adapter to a new index (`hci0` → `hci1` → …). The `HCI_CHANNEL_USER` socket does **not** error when the device is removed, so a proxy pinned to a fixed index would silently sit on a dead handle and Bluetooth would stop until a manual restart.
+
+- **`--device auto`** (default) resolves the adapter at each start. With **`--match-usb <VID>:<PID>`** it selects the adapter with that USB ID — useful on hosts with more than one Bluetooth adapter (e.g. an onboard Intel CNVi plus a USB dongle). Without `--match-usb` it picks the lowest present index. You can still pin a fixed index with `--device <N>`.
+- An **adapter watchdog** notices when the bound `hciN` disappears and exits, so `systemd` (`Restart=on-failure`) restarts the proxy and it re-resolves the new index automatically. `StartLimitIntervalSec=0` in the unit keeps an enumeration storm from wedging the restart loop.
+
+This makes the proxy work with **any** host Bluetooth adapter — not just Intel CNVi — including USB dongles that re-enumerate on reset.
+
+#### Command-line options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-d`, `--device` | `auto` | HCI index to bind, or `auto` to detect |
+| `--match-usb` | (none) | In auto mode, prefer the adapter with this USB `VID:PID` (e.g. `0bda:c821`) |
+| `-s`, `--socket` | `/run/bt-hci-proxy.sock` | UNIX socket path shared with the VM serial port |
+| `-v`, `--verbose` | off | Enable debug logging |
+
 ## Files
 
 | File | Description |
@@ -174,7 +192,8 @@ The add-on defaults to `/dev/ttyS1` with protocol `h4` and passive scanning enab
 On the host:
 ```sh
 systemctl status hci-proxy
-# Should show: "Opened HCI_CHANNEL_USER on hci0"
+# Should show: "Using adapter hciN (spec=auto)"
+# and: "Opened HCI_CHANNEL_USER on hciN"  (N is whichever index the adapter is on)
 # and: "Connected to virtio-serial at /run/bt-hci-proxy.sock"
 ```
 
@@ -214,12 +233,14 @@ Home Assistant's Bluetooth integration should transition from `setup_retry` to `
 | HA still in setup_retry | Restart the Bluetooth integration after hci0 appears |
 | Passive scanning warning | Enable passive scanning in the integration settings |
 | HCI command timeouts in dmesg | Restart hci-proxy to trigger a fresh HCI Reset |
+| Bluetooth stops after a USB reset / dongle re-plug | Use `--device auto` (the default) so the proxy follows the re-enumerated index; a fixed `--device <N>` goes stale |
+| Wrong adapter bound on a multi-adapter host | Pin the intended one with `--match-usb <VID>:<PID>` |
 
 ## Requirements
 
 - **Host**: Linux with BlueZ, Python 3.10+, libvirt/KVM
 - **VM**: Home Assistant OS (or any Linux VM with `btattach` and `hci_uart` module)
-- **Bluetooth adapter**: Any adapter supported by the host kernel (designed for Intel CNVi but should work with any adapter)
+- **Bluetooth adapter**: Any adapter supported by the host kernel. Originally built for Intel CNVi, but it works with any adapter — including USB dongles (e.g. Realtek RTL8761B). On hosts with more than one adapter, select the intended one with `--match-usb <VID>:<PID>`.
 
 
 # Appendix A - Detailed Problem Description
