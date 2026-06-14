@@ -65,6 +65,13 @@ class ProtocolError(Exception):
     pass
 
 
+# Raised when the bound HCI adapter disappears (USB reset / re-enumeration). The
+# proxy exits so the service manager restarts it and re-resolves the (possibly
+# renumbered) adapter index.
+class AdapterLost(Exception):
+    pass
+
+
 class H4StreamParser:
     """Reassemble complete H4 packets from a byte stream."""
 
@@ -153,6 +160,82 @@ def _libc_bind(sock: socket.socket, addr_bytes: bytes) -> None:
     if rc != 0:
         err = ctypes.get_errno()
         raise OSError(err, os.strerror(err))
+
+
+# Resolve which hciN to bind at startup instead of trusting a fixed index. A USB
+# reset re-enumerates the adapter to a new index (hci0 -> hci1 -> ...), so a
+# hardcoded index goes stale. In "auto" mode we pick the present adapter matching the
+# requested USB VID:PID (falling back to the lowest present index), which makes the
+# index churn irrelevant across re-enumerations.
+HCI_SYSFS = "/sys/class/bluetooth"
+
+
+def _present_hci_indices() -> list[int]:
+    try:
+        names = [n for n in os.listdir(HCI_SYSFS) if n.startswith("hci")]
+    except FileNotFoundError:
+        return []
+    out = []
+    for n in names:
+        try:
+            out.append(int(n[3:]))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
+def _hci_usb_ids(index: int) -> tuple[str, str] | None:
+    """Return (vendor, product) lowercase hex for hciN's USB parent, or None."""
+    p = os.path.realpath(f"{HCI_SYSFS}/hci{index}/device")
+    for _ in range(6):  # walk up the USB device tree to the node with idVendor/idProduct
+        iv, ip = os.path.join(p, "idVendor"), os.path.join(p, "idProduct")
+        if os.path.exists(iv) and os.path.exists(ip):
+            try:
+                with open(iv) as f:
+                    vid = f.read().strip().lower()
+                with open(ip) as f:
+                    pid = f.read().strip().lower()
+                return vid, pid
+            except OSError:
+                return None
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    return None
+
+
+def resolve_hci_index(spec: str, match_usb: str | None) -> int:
+    """Map a --device spec ('auto' or an int) to a present hci index."""
+    if spec != "auto":
+        return int(spec)
+    present = _present_hci_indices()
+    if not present:
+        raise AdapterLost("no hci adapter present on host")
+    if match_usb:
+        want = tuple(match_usb.lower().split(":", 1))
+        for idx in present:
+            if _hci_usb_ids(idx) == want:
+                return idx
+        logger.warning(
+            "No present adapter matches USB %s; falling back to lowest index hci%d",
+            match_usb, present[0],
+        )
+    return present[0]
+
+
+async def adapter_watchdog(index: int, interval: float = 3.0) -> None:
+    """Raise AdapterLost when hciN vanishes from sysfs (USB reset/re-enumeration).
+
+    The HCI_CHANNEL_USER socket does NOT reliably error when the device is removed,
+    so the forwarding coroutines can sit silently on a dead handle. This watchdog is
+    the active signal that the adapter is gone.
+    """
+    path = f"{HCI_SYSFS}/hci{index}"
+    while True:
+        await asyncio.sleep(interval)
+        if not os.path.exists(path):
+            raise AdapterLost(f"hci{index} disappeared from {HCI_SYSFS}")
 
 
 def open_hci_user_channel(dev: int) -> socket.socket:
@@ -310,6 +393,9 @@ async def run_proxy(hci_dev: int, sock_path: str) -> None:
                 await asyncio.gather(
                     forward_hci_to_virtio(hci_sock, writer, stats),
                     forward_virtio_to_hci(reader, hci_sock, stats),
+                    # Exit on adapter loss (not caught below) so the service manager
+                    # restarts us and re-resolves the new index.
+                    adapter_watchdog(hci_dev),
                 )
             except (ConnectionError, OSError) as exc:
                 logger.warning("Connection lost: %s  (stats: %s)", exc, stats)
@@ -333,8 +419,12 @@ def main() -> None:
         description="Bluetooth HCI-over-Serial proxy (host side)"
     )
     ap.add_argument(
-        "-d", "--device", type=int, default=0,
-        help="HCI device index (default: 0)",
+        "-d", "--device", default="auto",
+        help="HCI device index, or 'auto' to detect (default: auto)",
+    )
+    ap.add_argument(
+        "--match-usb", default=None,
+        help="In auto mode, prefer the adapter with this USB VID:PID (e.g. 0bda:c821)",
     )
     ap.add_argument(
         "-s", "--socket", default="/run/bt-hci-proxy.sock",
@@ -356,7 +446,14 @@ def main() -> None:
         loop.add_signal_handler(sig, lambda: sys.exit(0))
 
     try:
-        loop.run_until_complete(run_proxy(args.device, args.socket))
+        # Resolve the index now; AdapterLost (here or from the watchdog) exits
+        # non-zero so the service manager restarts and re-resolves.
+        hci_dev = resolve_hci_index(args.device, args.match_usb)
+        logger.info("Using adapter hci%d (spec=%s)", hci_dev, args.device)
+        loop.run_until_complete(run_proxy(hci_dev, args.socket))
+    except AdapterLost as exc:
+        logger.error("Adapter lost: %s — exiting for restart", exc)
+        sys.exit(1)
     except KeyboardInterrupt:
         pass
     finally:

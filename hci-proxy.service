@@ -2,6 +2,10 @@
 Description=Bluetooth HCI-over-Serial Proxy
 After=bluetooth.target
 Conflicts=bluetooth.service
+# The proxy exits when the adapter re-enumerates (USB reset) so it can re-resolve the
+# new index; recovery is a restart loop. Disable the start-rate limit so an
+# enumeration storm can't wedge the unit in "start-limit-hit".
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
