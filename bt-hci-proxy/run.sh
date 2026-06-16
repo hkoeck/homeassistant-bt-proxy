@@ -24,7 +24,7 @@ wait_for_hci0() {
 
 # Wait for BlueZ to register hci0 on D-Bus (adapter must be powered and visible)
 wait_for_bluez_adapter() {
-    for i in $(seq 1 15); do
+    for i in $(seq 1 20); do
         if dbus-send --system --print-reply --dest=org.bluez \
             /org/bluez/hci0 \
             org.freedesktop.DBus.Properties.Get \
@@ -97,11 +97,19 @@ configure_adapter() {
             set_adapter_name
             enable_passive_scan
         else
-            bashio::log.warning "BlueZ did not register hci0 — skipping D-Bus config"
-            enable_passive_scan
+            # BlueZ failed to register the freshly-attached hci0 (transient race
+            # observed on restart). Proceeding leaves a half-configured adapter that
+            # HA's bluetooth integration cannot set up -> the config entry flips to
+            # setup_retry and BLE stays dead until manual intervention. Exit non-zero
+            # so the Supervisor watchdog restarts us: recreating hci0 reliably
+            # re-triggers registration (confirmed: a 2nd restart clears it).
+            bashio::log.error "BlueZ did not register hci0 — exiting for watchdog restart"
+            kill "${BTATTACH_PID}" 2>/dev/null
+            exit 1
         fi
     else
-        bashio::log.warning "hci0 did not appear in time — skipping adapter config"
+        bashio::log.error "hci0 did not appear in time — exiting for watchdog restart"
+        exit 1
     fi
 }
 

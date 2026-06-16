@@ -56,6 +56,34 @@ H4_PACKET_INFO = {
 
 MAX_PARSER_BUF = 65536  # 64 KiB sanity limit
 
+# HCI event codes (controller → host) we interpret for connection-lifecycle logging.
+HCI_EVT_DISCONN_COMPLETE = 0x05
+HCI_EVT_LE_META = 0x3E
+HCI_LE_CONN_COMPLETE = 0x01
+HCI_LE_ENHANCED_CONN_COMPLETE = 0x0A
+
+# HCI/LL disconnect + connection error reason codes (Core spec Vol 1 Part F). Only the
+# ones that actually surface for a BLE sensor link are named; the reason is the single
+# most useful datum for diagnosing *why* a connection drops (e.g. 0x08 supervision
+# timeout = latency/range, 0x3e = failed to establish, 0x13 = device closed the link).
+HCI_REASON_NAMES = {
+    0x05: "auth failure",
+    0x08: "connection timeout (supervision)",
+    0x13: "remote user terminated",
+    0x14: "remote terminated (low resources)",
+    0x15: "remote terminated (power off)",
+    0x16: "local host terminated",
+    0x22: "LL response timeout",
+    0x28: "instant passed",
+    0x3B: "unacceptable connection params",
+    0x3D: "MIC failure",
+    0x3E: "connection failed to establish",
+}
+
+# Heartbeat cadence: log forwarding counters periodically so the host journal shows
+# whether the link is alive/saturated even when no connection event fires.
+STATS_HEARTBEAT_INTERVAL = 300.0
+
 
 # ---------------------------------------------------------------------------
 # H4 stream parser
@@ -299,6 +327,42 @@ def _describe_pkt(data: bytes) -> str:
     return f"type=0x{ptype:02x} len={len(data)}"
 
 
+def _reason(code: int) -> str:
+    return HCI_REASON_NAMES.get(code, f"0x{code:02x}")
+
+
+def log_hci_connection_events(data: bytes) -> None:
+    """Log BLE connection/disconnection events at INFO from controller→host traffic.
+
+    A transparent bridge can't fix drops, but surfacing the controller's own
+    Disconnection-Complete reason code turns "it keeps losing connection" into a
+    concrete cause (supervision timeout vs failed-to-establish vs remote-terminated).
+    Cheap: only inspects HCI event packets, parses a few header bytes, no payload copy.
+    """
+    if len(data) < 3 or data[0] != H4_EVT_PKT:
+        return
+    evt = data[1]
+    if evt == HCI_EVT_DISCONN_COMPLETE and len(data) >= 7:
+        # [type][evt][plen][status][handle:2][reason]
+        status, handle = data[3], struct.unpack_from("<H", data, 4)[0]
+        reason = data[6]
+        logger.info(
+            "BLE disconnect: handle=0x%04x status=0x%02x reason=%s",
+            handle, status, _reason(reason),
+        )
+    elif evt == HCI_EVT_LE_META and len(data) >= 7:
+        sub = data[3]
+        if sub in (HCI_LE_CONN_COMPLETE, HCI_LE_ENHANCED_CONN_COMPLETE):
+            # [type][evt][plen][subevent][status][handle:2]…
+            status, handle = data[4], struct.unpack_from("<H", data, 5)[0]
+            if status == 0:
+                logger.info("BLE connected: handle=0x%04x", handle)
+            else:
+                logger.info(
+                    "BLE connect failed: status=%s", _reason(status)
+                )
+
+
 async def forward_hci_to_virtio(
     hci_sock: socket.socket,
     writer: asyncio.StreamWriter,
@@ -311,10 +375,21 @@ async def forward_hci_to_virtio(
         if not data:
             raise ConnectionError("HCI socket closed")
         stats["hci_to_virtio"] += 1
+        log_hci_connection_events(data)
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("HCI→Virtio  %s", _describe_pkt(data))
         writer.write(data)
         await writer.drain()
+
+
+async def stats_heartbeat(stats: dict, interval: float = STATS_HEARTBEAT_INTERVAL) -> None:
+    """Periodically log forwarding counters so the journal isn't silent on a live link."""
+    while True:
+        await asyncio.sleep(interval)
+        logger.info(
+            "proxy heartbeat: hci->virtio=%d virtio->hci=%d (this virtio session)",
+            stats["hci_to_virtio"], stats["virtio_to_hci"],
+        )
 
 
 async def forward_virtio_to_hci(
@@ -396,6 +471,7 @@ async def run_proxy(hci_dev: int, sock_path: str) -> None:
                     # Exit on adapter loss (not caught below) so the service manager
                     # restarts us and re-resolves the new index.
                     adapter_watchdog(hci_dev),
+                    stats_heartbeat(stats),
                 )
             except (ConnectionError, OSError) as exc:
                 logger.warning("Connection lost: %s  (stats: %s)", exc, stats)
