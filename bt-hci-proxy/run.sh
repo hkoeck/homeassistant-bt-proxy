@@ -2,7 +2,6 @@
 
 DEVICE=$(bashio::config 'device')
 PROTOCOL=$(bashio::config 'protocol')
-PASSIVE_SCAN=$(bashio::config 'passive_scan')
 ADAPTER_NAME_PREFIX=$(bashio::config 'adapter_name_prefix')
 
 # hci_uart is typically already loaded on HAOS. Try modprobe as a fallback,
@@ -78,24 +77,15 @@ set_adapter_name() {
     fi
 }
 
-enable_passive_scan() {
-    if bashio::var.true "${PASSIVE_SCAN}"; then
-        bashio::log.info "Enabling passive scanning on hci0..."
-        if btmgmt --index 0 passive-scan on 2>/dev/null; then
-            bashio::log.info "Passive scanning enabled"
-        else
-            bashio::log.warning "Failed to enable passive scanning via btmgmt"
-        fi
-    fi
-}
-
 configure_adapter() {
     if wait_for_hci0; then
         bashio::log.info "hci0 is up, waiting for BlueZ to register adapter..."
         if wait_for_bluez_adapter; then
             bashio::log.info "BlueZ adapter registered, configuring..."
+            # Passive scanning is left to HA's bluetooth integration (it sets PASSIVE
+            # itself); the old btmgmt call here was redundant and logged a false
+            # "Failed to enable passive scanning" warning on every start.
             set_adapter_name
-            enable_passive_scan
         else
             # BlueZ failed to register the freshly-attached hci0 (transient race
             # observed on restart). Proceeding leaves a half-configured adapter that

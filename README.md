@@ -195,7 +195,7 @@ If this repo is hosted on GitHub, add it as a custom add-on repository:
 3. Add the repository URL (e.g. `https://github.com/nlothian/homeassistant-bt-proxy`)
 4. Find **BT HCI Proxy** and install it
 
-The add-on defaults to `/dev/ttyS1` with protocol `h4` and passive scanning enabled. These can be changed in the add-on's **Configuration** tab if needed.
+The add-on defaults to `/dev/ttyS1` with protocol `h4`. These can be changed in the add-on's **Configuration** tab if needed.
 
 ### 4. Verify
 
@@ -223,7 +223,7 @@ Home Assistant's Bluetooth integration should transition from `setup_retry` to `
 
 ## Notes
 
-- **Passive scanning**: The latency added by the proxy path may prevent active BLE scanning from working reliably. The add-on enables passive scanning on the adapter by default (via `btmgmt`). You can disable this by setting `passive_scan: false` in the add-on configuration. You may also need to enable the passive scanning option in the relevant Home Assistant integration. Passive scanning is sufficient for most BLE devices.
+- **Passive scanning**: The latency added by the proxy path may prevent active BLE scanning from working reliably. Passive scanning is set by Home Assistant's Bluetooth integration itself, so the add-on no longer touches it (an earlier `btmgmt` call here was redundant and logged a false failure warning on every start). If a device needs it, enable passive scanning in the relevant Home Assistant integration.
 
 - **HAOS read-only filesystem**: HAOS uses a read-only root filesystem (erofs), so `btattach` can't be persisted as a systemd unit inside the VM. The HA Add-on (`bt-hci-proxy/`) solves this by running `btattach` in a managed Docker container that persists across reboots.
 
@@ -241,7 +241,7 @@ Home Assistant's Bluetooth integration should transition from `setup_retry` to `
 | Add-on shows "Resource busy" | A previous btattach left the line discipline attached; the add-on detects hci0 and monitors it — this is normal |
 | Add-on shows "hci0 disappeared" | The add-on will auto-restart and re-attach; check that hci-proxy is running on the host |
 | HA still in setup_retry | Restart the Bluetooth integration after hci0 appears |
-| Passive scanning warning | Enable passive scanning in the integration settings |
+| Passive scanning needed by a device | Enable passive scanning in the integration settings (the add-on no longer sets it) |
 | HCI command timeouts in dmesg | Restart hci-proxy to trigger a fresh HCI Reset |
 | Bluetooth stops after a USB reset / dongle re-plug | Use `--device auto` (the default) so the proxy follows the re-enumerated index; a fixed `--device <N>` goes stale |
 | Wrong adapter bound on a multi-adapter host | Pin the intended one with `--match-usb <VID>:<PID>` |

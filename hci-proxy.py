@@ -80,8 +80,8 @@ HCI_REASON_NAMES = {
     0x3E: "connection failed to establish",
 }
 
-# Heartbeat cadence: log forwarding counters periodically so the host journal shows
-# whether the link is alive/saturated even when no connection event fires.
+# Heartbeat cadence: periodically log forwarding counters (at DEBUG — see stats_heartbeat)
+# so `-v` can confirm the link is alive/saturated when actively triaging.
 STATS_HEARTBEAT_INTERVAL = 300.0
 
 
@@ -383,10 +383,16 @@ async def forward_hci_to_virtio(
 
 
 async def stats_heartbeat(stats: dict, interval: float = STATS_HEARTBEAT_INTERVAL) -> None:
-    """Periodically log forwarding counters so the journal isn't silent on a live link."""
+    """Periodically log forwarding counters at DEBUG.
+
+    Steady state (post-diagnosis) this is noise — a connect/disconnect pair already
+    fires every poll cycle, and the counters only matter when actively triaging. Kept
+    at DEBUG so `-v` still surfaces it for future investigation without spamming the
+    host journal indefinitely.
+    """
     while True:
         await asyncio.sleep(interval)
-        logger.info(
+        logger.debug(
             "proxy heartbeat: hci->virtio=%d virtio->hci=%d (this virtio session)",
             stats["hci_to_virtio"], stats["virtio_to_hci"],
         )
