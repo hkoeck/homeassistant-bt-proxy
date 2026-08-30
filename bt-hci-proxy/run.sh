@@ -82,6 +82,7 @@ configure_adapter() {
         bashio::log.info "hci0 is up, waiting for BlueZ to register adapter..."
         if wait_for_bluez_adapter; then
             bashio::log.info "BlueZ adapter registered, configuring..."
+            record_success
             # Passive scanning is left to HA's bluetooth integration (it sets PASSIVE
             # itself); the old btmgmt call here was redundant and logged a false
             # "Failed to enable passive scanning" warning on every start.
@@ -94,13 +95,59 @@ configure_adapter() {
             # so the Supervisor watchdog restarts us: recreating hci0 reliably
             # re-triggers registration (confirmed: a 2nd restart clears it).
             bashio::log.error "BlueZ did not register hci0 — exiting for watchdog restart"
+            record_failure
             kill "${BTATTACH_PID}" 2>/dev/null
             exit 1
         fi
     else
         bashio::log.error "hci0 did not appear in time — exiting for watchdog restart"
+        record_failure
         exit 1
     fi
+}
+
+# --- Guest-side deep-health alert --------------------------------------------
+# The retry loop above (and the wedge watchdog below) recovers on its own, but that
+# recovery is invisible: the HAOS guest has no telemetry path into the homeserver
+# Prometheus/Loki stack, so a "never registers" crash-loop can run for days with
+# nothing external able to see it (infra#353 — 5 days undetected, Aug25-30 2026).
+# Track how long registration has been failing in files under /data (persists
+# across the container restarts this watchdog itself triggers) and, once that
+# exceeds ALERT_GRACE_SECONDS, push exactly one notification through HA's own
+# script.send_alert (reached via the Supervisor-proxied Core API) — the same
+# convention used by mpd_offline_alert/alpstuga_offline_alert for identical
+# "silently crash-looping, nothing said so" cases. Transient drops that self-heal
+# within the grace window (confirmed same day: a re-enumeration that recovered in
+# ~1 min) must NOT alert, per the issue's own design note.
+ALERT_GRACE_SECONDS=$(bashio::config 'alert_grace_seconds' '300')
+FAILURE_STATE_FILE=/data/adapter_failure_since
+ALERTED_STATE_FILE=/data/adapter_alerted
+
+send_alert_to_ha() {
+    local since="$1"
+    local minutes=$(( ( $(date +%s) - since ) / 60 ))
+    bashio::api.supervisor POST "/core/api/services/script/send_alert" \
+        "{\"title\": \"BT proxy adapter not registering\", \"message\": \"bt-hci-proxy has failed to register the Bluetooth adapter for ${minutes}+ minutes. Check host hci-proxy.service and guest 'ha addons logs local_bt-hci-proxy'.\"}" \
+        >/dev/null 2>&1
+}
+
+record_failure() {
+    local now
+    now=$(date +%s)
+    [ -f "${FAILURE_STATE_FILE}" ] || echo "${now}" > "${FAILURE_STATE_FILE}"
+    if [ ! -f "${ALERTED_STATE_FILE}" ]; then
+        local since elapsed
+        since=$(cat "${FAILURE_STATE_FILE}")
+        elapsed=$(( now - since ))
+        if [ "${elapsed}" -ge "${ALERT_GRACE_SECONDS}" ]; then
+            bashio::log.warning "Adapter registration has failed for ${elapsed}s — sending HA alert"
+            send_alert_to_ha "${since}" && touch "${ALERTED_STATE_FILE}"
+        fi
+    fi
+}
+
+record_success() {
+    rm -f "${FAILURE_STATE_FILE}" "${ALERTED_STATE_FILE}"
 }
 
 # --- Adapter health watchdog -------------------------------------------------
@@ -153,6 +200,7 @@ monitor_adapter() {
         # a healthy adapter stays Powered:yes; Powered:no is the wedge signature
         if adapter_powered; then
             wedge_count=0
+            record_success
             continue
         fi
 
@@ -169,6 +217,7 @@ monitor_adapter() {
         bashio::log.warning "Adapter still wedged after re-power (${wedge_count}/${WEDGE_LIMIT})"
         if [ "${wedge_count}" -ge "${WEDGE_LIMIT}" ]; then
             bashio::log.error "Adapter wedged (Powered:no, re-power failed) — exiting for watchdog restart to recreate hci0"
+            record_failure
             [ -n "${BTATTACH_PID}" ] && kill "${BTATTACH_PID}" 2>/dev/null
             exit 1
         fi

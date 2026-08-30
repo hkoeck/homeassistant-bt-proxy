@@ -1,5 +1,5 @@
 name: "BT HCI Proxy"
-version: "0.1.2"
+version: "0.1.3"
 slug: "bt-hci-proxy"
 description: "Attaches a Bluetooth HCI UART device (btattach) for use with the bt-proxy host-side service"
 url: "https://github.com/nlothian/homeassistant-bt-proxy"
@@ -15,11 +15,14 @@ privileged:
   - SYS_MODULE
   - NET_ADMIN
 host_dbus: true
+homeassistant_api: true
 options:
   device: "/dev/ttyS1"
   protocol: "h4"
   adapter_name_prefix: "BT Proxy for"
+  alert_grace_seconds: 300
 schema:
   device: str
   protocol: str
   adapter_name_prefix: str?
+  alert_grace_seconds: int?
