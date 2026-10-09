@@ -240,6 +240,8 @@ Home Assistant's Bluetooth integration should transition from `setup_retry` to `
 | btattach fails with ioctl error | Ensure using `/dev/ttyS1` (serial port), not a virtio-ports device |
 | Add-on shows "Resource busy" | A previous btattach left the line discipline attached; the add-on detects hci0 and monitors it — this is normal |
 | Add-on shows "hci0 disappeared" | The add-on will auto-restart and re-attach; check that hci-proxy is running on the host |
+| Adapter wedged (`Powered:no`, not just absent) | `monitor_adapter` polls power state and self-heals: after `WEDGE_LIMIT` (default `2`) consecutive failed checks, it forces an `hci0` re-power/recreate on its own — no manual intervention needed in most cases |
+| Need an alert instead of silent self-heal | `alert_grace_seconds` (default `300`) option: if the adapter stays failed past that grace window (tracked in `/data/adapter_failure_since`), the add-on POSTs to HA's `script.send_alert` via the Supervisor-proxied Core API — wires into the same alert path as everything else (see `ha_notification_foundation` project memory) |
 | HA still in setup_retry | Restart the Bluetooth integration after hci0 appears |
 | Passive scanning needed by a device | Enable passive scanning in the integration settings (the add-on no longer sets it) |
 | HCI command timeouts in dmesg | Restart hci-proxy to trigger a fresh HCI Reset |
